@@ -35,9 +35,12 @@ from megatron.core.transformer.utils import sharded_state_dict_default
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import (
     ParallelCausalDepthwiseConv1d,
+    ParallelCausalDepthwiseConv1dWithState,
     ParallelHyenaOperator,
     ParallelShortHyenaOperator,
     divide,
+    with_state_p,
+    with_state_s,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,7 +167,16 @@ class HyenaMixer(MegatronModule):
 
         hyena_proj_groups = self.proj_groups if not self.grouped_attention else 1
         grouped_proj_size = self.hidden_size_per_partition // hyena_proj_groups
-        self.hyena_proj_conv = ParallelCausalDepthwiseConv1d(
+
+        hyena_proj_conv_class = ParallelCausalDepthwiseConv1d
+        if with_state_p:
+            hyena_proj_conv_class = ParallelCausalDepthwiseConv1dWithState
+
+        short_conv_class = ParallelCausalDepthwiseConv1d
+        if with_state_s:
+            short_conv_class = ParallelCausalDepthwiseConv1dWithState
+
+        self.hyena_proj_conv = hyena_proj_conv_class(
             self.hidden_size_per_partition + 2 * grouped_proj_size,
             self.transformer_config,
             self.hyena_config,
@@ -183,7 +195,7 @@ class HyenaMixer(MegatronModule):
                 self.transformer_config,
                 self.hyena_config,
                 self.transformer_config.init_method,
-                short_conv_class=ParallelCausalDepthwiseConv1d,
+                short_conv_class=short_conv_class,
                 use_fast_causal_conv=self.fast_conv_mixer,
                 is_mlp=self.is_mlp,
                 use_conv_bias=self.transformer_config.use_short_conv_bias,
@@ -275,22 +287,25 @@ class HyenaMixer(MegatronModule):
 
             with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
                 features, _ = self.dense_projection(x)
-
             # Slice back to original sequence length if padding was added
             if features.shape[0] > L:
                 features = features[:L, :, :]
 
         else:
             features, _ = self.dense_projection(x)
+
+        # torch.Size([1, 4, 5760])
         features = rearrange(features, "l b d -> b l d").contiguous()
+        # torch.Size([1, 5760, 4])
         features_L_last = features.permute(0, 2, 1)
-        features_D_last = self.hyena_proj_conv(features_L_last, _use_cp=_proj_use_cp).permute(0, 2, 1)
+        features_L_last = self.hyena_proj_conv(features_L_last, _use_cp=_proj_use_cp, inference_params=inference_params)
+        features_D_last = features_L_last.permute(0, 2, 1)
 
         x1, x2, v = rearrange(
             features_D_last, "b l (g dg p) -> b l g p dg", p=3, g=self.num_groups_per_tp_rank
         ).unbind(dim=3)
 
-        z = self.mixer(x1, x2, v)
+        z = self.mixer(x1, x2, v, inference_params=inference_params)
         z = rearrange(z, "b l d -> l b d").contiguous()
 
         y, bias = self.dense(z)
