@@ -219,7 +219,7 @@ class HyenaConfig(TransformerConfig, io.IOMixin):
     use_short_conv_bias: bool = False
     # Use this if you want to turn FP8 on for the linear layer in the mixer only. When using this, do not set
     #  Fp8 in the mixed precision plugin.
-    vortex_style_fp8: bool = False
+    vortex_style_fp8: bool = True
 
     def __post_init__(self):
         """
