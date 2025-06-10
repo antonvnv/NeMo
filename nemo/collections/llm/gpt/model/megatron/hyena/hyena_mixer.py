@@ -260,8 +260,26 @@ class HyenaMixer(MegatronModule):
         else:
             _proj_use_cp = False
         if self.transformer_config.vortex_style_fp8:
+            def pad_to_multiple(x, multiple=16):
+                batch_size, seq_len, hidden_dim = x.size()
+                pad_len = (multiple - (seq_len % multiple)) % multiple
+                if pad_len == 0:
+                    return x
+                from torch.nn.functional import pad
+                return pad(x, (0, 0, 0, pad_len))
+
+            L = x.shape[0]
+            x = rearrange(x, "l b d -> b l d")
+            x = pad_to_multiple(x)
+            x = rearrange(x, "b l d -> l b d")
+
             with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
                 features, _ = self.dense_projection(x)
+
+            # Slice back to original sequence length if padding was added
+            if features.shape[0] > L:
+                features = features[:L, :, :]
+
         else:
             features, _ = self.dense_projection(x)
         features = rearrange(features, "l b d -> b l d").contiguous()
