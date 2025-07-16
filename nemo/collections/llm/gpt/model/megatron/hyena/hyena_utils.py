@@ -572,7 +572,6 @@ class ImplicitModalFilter(nn.Module):
         self.t = rearrange(torch.arange(L_cache, dtype=torch.float32), "L -> 1 1 L").to(
             device=torch.cuda.current_device()
         )  # <- this should be arange
-        self.use_cached_t = False
         with get_cuda_rng_tracker().fork():
             gamma = torch.rand(self.d_model, order, dtype=torch.float32) * (gamma_max - gamma_min) + gamma_min
             gamma = gamma.cuda().log()
@@ -589,13 +588,11 @@ class ImplicitModalFilter(nn.Module):
         """
         Get the t tensor.
         """
-        # Assumes L <= L_cache
-        if self.use_cached_t:
+        if self.t.shape[-1] >= L:
             return self.t[..., :L]
 
         t = rearrange(torch.arange(L, dtype=torch.float32, device=self.t.device), "L -> 1 1 L")
         self.t = t
-        self.use_cached_t = True
 
         return t
 
